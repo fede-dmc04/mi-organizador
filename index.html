@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mi organizador</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root {
     --bg:#ffffff;--bg2:#f5f5f3;--bg3:#eeecea;
@@ -120,10 +121,7 @@
     <div class="login-icon">📋</div>
     <h1>Mi organizador</h1>
     <p>Tareas, notas y economía personal sincronizados con tu Google Drive.</p>
-    <button class="btn btn-google" onclick="loginGoogle()" style="width:100%;justify-content:center">
-      <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.707A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.707V4.961H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.039l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.961L3.964 7.293C4.672 5.163 6.656 3.58 9 3.58z"/></svg>
-      Entrar con Google
-    </button>
+    <div id="gsi-button"></div>
   </div>
 </div>
 
@@ -284,329 +282,171 @@
 </div>
 
 <script>
-// ── Config — SE COMPLETA CON TU CLIENT ID ──
-const CLIENT_ID  = '__GOOGLE_CLIENT_ID__';
-const FILE_NAME  = 'organizador-datos.json';
-const SCOPES     = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
-const LS_TOKEN   = 'org_access_token';
-const LS_REFRESH = 'org_refresh_token';
-const LS_EXPIRY  = 'org_token_expiry';
-const LS_FILE    = 'org_file_id';
-const LS_USER    = 'org_user';
-const LS_CACHE   = 'org_data_cache';
+// ── Config ──
+const CLIENT_ID = '426694049730-6oimjdmch396vpa2hj8rams62q46drqf.apps.googleusercontent.com';
+const SCOPES    = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
+const FILE_NAME = 'organizador-datos.json';
+const LS_TOKEN  = 'org_token';
+const LS_EXPIRY = 'org_expiry';
+const LS_FILE   = 'org_file_id';
+const LS_USER   = 'org_user';
+const LS_CACHE  = 'org_cache';
 
-// ── State ──
-let data = { tasks:[], notes:[], incomes:[], expenses:[] };
+let data = {tasks:[],notes:[],incomes:[],expenses:[]};
 let taskFilter = 'all';
 let currentMonth = todayStr().slice(0,7);
 let saveTimer = null;
-let fileId = localStorage.getItem(LS_FILE)||'';
+let fileId = localStorage.getItem('org_file_id')||'';
+let tokenClient = null;
 
 function todayStr(){ return new Date().toISOString().split('T')[0]; }
 function fmt(n){ return '$'+Math.round(n).toLocaleString('es-AR'); }
 function mk(d){ return d?d.slice(0,7):''; }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ── Status ──
-function setStatus(state, msg){
-  const bar=document.getElementById('status-bar'), dot=document.getElementById('status-dot'), txt=document.getElementById('status-txt');
+function setStatus(state,msg){
+  const bar=document.getElementById('status-bar'),dot=document.getElementById('status-dot'),txt=document.getElementById('status-txt');
   bar.classList.remove('hidden'); dot.className='dot dot-'+state; txt.textContent=msg;
   if(state==='ok') setTimeout(()=>bar.classList.add('hidden'),2500);
 }
 
-// ── OAuth PKCE ──
-function b64url(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,''); }
-async function pkce(){
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-  return { verifier, challenge };
-}
+function getToken(){ return localStorage.getItem(LS_TOKEN)||''; }
+function tokenValid(){ return !!getToken() && parseInt(localStorage.getItem(LS_EXPIRY)||0) > Date.now()+60000; }
 
-async function loginGoogle(){
-  const { verifier, challenge } = await pkce();
-  sessionStorage.setItem('pkce_verifier', verifier);
-  const params = new URLSearchParams({
+function initGIS(){
+  tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
-    redirect_uri: location.origin + location.pathname,
-    response_type: 'code',
     scope: SCOPES,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    access_type: 'offline',
-    prompt: 'consent'
+    callback: async(resp) => {
+      if(resp.error){ setStatus('err','Error al autenticar'); return; }
+      localStorage.setItem(LS_TOKEN, resp.access_token);
+      localStorage.setItem(LS_EXPIRY, Date.now() + resp.expires_in*1000);
+      document.getElementById('login-screen').style.display='none';
+      await loadUser();
+      await initDrive();
+    }
   });
-  location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+
+  document.getElementById('gsi-button').innerHTML = `
+    <button onclick="requestToken()" style="display:flex;align-items:center;gap:10px;padding:11px 24px;font-size:15px;font-weight:500;border:1px solid #ddd;border-radius:8px;background:#fff;color:#444;cursor:pointer;font-family:inherit;width:100%;justify-content:center;margin-top:8px">
+      <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.707A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.707V4.961H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.039l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.961L3.964 7.293C4.672 5.163 6.656 3.58 9 3.58z"/></svg>
+      Entrar con Google
+    </button>`;
+
+  if(tokenValid()){
+    document.getElementById('login-screen').style.display='none';
+    loadUser().then(()=>initDrive());
+  }
 }
 
-async function handleCallback(){
-  const params = new URLSearchParams(location.search);
-  const code = params.get('code');
-  if(!code) return false;
-  history.replaceState({},'',location.pathname);
-  const verifier = sessionStorage.getItem('pkce_verifier');
-  // Exchange code → tokens via proxy CORS (usamos el endpoint público de Google)
-  const resp = await fetch('https://oauth2.googleapis.com/token',{
-    method:'POST',
-    headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body: new URLSearchParams({
-      code, client_id: CLIENT_ID,
-      redirect_uri: location.origin + location.pathname,
-      grant_type: 'authorization_code',
-      code_verifier: verifier
-    })
+function requestToken(){
+  if(tokenValid()){
+    document.getElementById('login-screen').style.display='none';
+    loadUser().then(()=>initDrive());
+    return;
+  }
+  tokenClient.requestAccessToken({prompt:''});
+}
+
+async function ensureToken(){
+  if(tokenValid()) return;
+  await new Promise(resolve => {
+    const orig = tokenClient.callback;
+    tokenClient.callback = async(resp) => {
+      if(!resp.error){
+        localStorage.setItem(LS_TOKEN, resp.access_token);
+        localStorage.setItem(LS_EXPIRY, Date.now() + resp.expires_in*1000);
+      }
+      tokenClient.callback = orig;
+      resolve();
+    };
+    tokenClient.requestAccessToken({prompt:''});
   });
-  const tokens = await resp.json();
-  if(tokens.error){ alert('Error de autenticación: '+tokens.error_description); return false; }
-  saveTokens(tokens);
-  return true;
-}
-
-function saveTokens(t){
-  if(t.access_token) localStorage.setItem(LS_TOKEN, t.access_token);
-  if(t.refresh_token) localStorage.setItem(LS_REFRESH, t.refresh_token);
-  if(t.expires_in) localStorage.setItem(LS_EXPIRY, Date.now() + t.expires_in*1000);
-}
-
-function accessToken(){ return localStorage.getItem(LS_TOKEN)||''; }
-
-async function refreshIfNeeded(){
-  const expiry = parseInt(localStorage.getItem(LS_EXPIRY)||'0');
-  if(Date.now() < expiry - 60000) return true; // still valid
-  const refresh = localStorage.getItem(LS_REFRESH);
-  if(!refresh) return false;
-  const resp = await fetch('https://oauth2.googleapis.com/token',{
-    method:'POST',
-    headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body: new URLSearchParams({ grant_type:'refresh_token', client_id:CLIENT_ID, refresh_token:refresh })
-  });
-  const t = await resp.json();
-  if(t.error){ logout(); return false; }
-  saveTokens(t);
-  return true;
-}
-
-async function apiGet(url){
-  await refreshIfNeeded();
-  return fetch(url,{ headers:{ Authorization:'Bearer '+accessToken() } });
-}
-async function apiPost(url, body, method='POST', ct='application/json'){
-  await refreshIfNeeded();
-  return fetch(url,{ method, headers:{ Authorization:'Bearer '+accessToken(), 'Content-Type':ct }, body });
-}
-
-// ── User info ──
-async function loadUser(){
-  const cached = localStorage.getItem(LS_USER);
-  if(cached){ applyUser(JSON.parse(cached)); return; }
-  const r = await apiGet('https://www.googleapis.com/oauth2/v2/userinfo');
-  if(!r.ok) return;
-  const u = await r.json();
-  localStorage.setItem(LS_USER, JSON.stringify(u));
-  applyUser(u);
-}
-function applyUser(u){
-  document.getElementById('user-avatar').src = u.picture||'';
-  document.getElementById('user-name').textContent = u.name||u.email||'';
-  document.getElementById('nav-user').style.display='flex';
-  document.getElementById('cfg-avatar').src = u.picture||'';
-  document.getElementById('cfg-name').textContent = u.name||'';
-  document.getElementById('cfg-email').textContent = u.email||'';
 }
 
 function logout(){
-  [LS_TOKEN,LS_REFRESH,LS_EXPIRY,LS_FILE,LS_USER,LS_CACHE].forEach(k=>localStorage.removeItem(k));
+  try{ google.accounts.oauth2.revoke(getToken(), ()=>{}); }catch(e){}
+  [LS_TOKEN,LS_EXPIRY,LS_FILE,LS_USER,LS_CACHE].forEach(k=>localStorage.removeItem(k));
   location.reload();
 }
 
-// ── Drive file ──
-async function findOrCreateFile(){
-  // buscar archivo existente
-  const q = encodeURIComponent(`name='${FILE_NAME}' and trashed=false`);
-  const r = await apiGet(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`);
-  const d = await r.json();
-  if(d.files && d.files.length>0){
-    fileId = d.files[0].id;
-    localStorage.setItem(LS_FILE, fileId);
-    return fileId;
-  }
-  // crear nuevo
-  const meta = JSON.stringify({ name: FILE_NAME, mimeType:'application/json' });
-  const content = JSON.stringify({ tasks:[], notes:[], incomes:[], expenses:[] });
-  const boundary = 'org_boundary';
-  const body = `--${boundary}\r\nContent-Type: application/json\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-  const cr = await apiPost('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
-    body, 'POST', `multipart/related; boundary=${boundary}`);
-  const f = await cr.json();
-  fileId = f.id;
-  localStorage.setItem(LS_FILE, fileId);
-  return fileId;
+async function loadUser(){
+  const cached=localStorage.getItem(LS_USER);
+  if(cached){ applyUser(JSON.parse(cached)); return; }
+  const r=await fetch('https://www.googleapis.com/oauth2/v2/userinfo',{headers:{Authorization:'Bearer '+getToken()}});
+  if(!r.ok) return;
+  const u=await r.json();
+  localStorage.setItem(LS_USER,JSON.stringify(u));
+  applyUser(u);
+}
+function applyUser(u){
+  document.getElementById('user-avatar').src=u.picture||'';
+  document.getElementById('user-name').textContent=u.name||u.email||'';
+  document.getElementById('nav-user').style.display='flex';
+  document.getElementById('cfg-avatar').src=u.picture||'';
+  document.getElementById('cfg-name').textContent=u.name||'';
+  document.getElementById('cfg-email').textContent=u.email||'';
 }
 
-async function driveRead(){
-  const r = await apiGet(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-  if(!r.ok) throw new Error('read '+r.status);
-  return r.json();
-}
+async function apiGet(url){ await ensureToken(); return fetch(url,{headers:{Authorization:'Bearer '+getToken()}}); }
+async function apiReq(url,method,body,ct='application/json'){ await ensureToken(); return fetch(url,{method,headers:{Authorization:'Bearer '+getToken(),'Content-Type':ct},body}); }
 
-async function driveWrite(obj){
-  const r = await apiPost(
-    `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
-    JSON.stringify(obj,null,2), 'PATCH', 'application/json'
-  );
-  if(!r.ok) throw new Error('write '+r.status);
-}
-
-// ── Boot ──
-async function boot(){
-  // handle OAuth callback
-  if(location.search.includes('code=')){
-    setStatus('saving','Autenticando…');
-    const ok = await handleCallback();
-    if(!ok) return;
-  }
-  const token = accessToken();
-  if(!token){ return; } // muestra login screen
-  document.getElementById('login-screen').style.display='none';
-  setStatus('saving','Cargando datos…');
-  try {
-    await loadUser();
+async function initDrive(){
+  setStatus('saving','Conectando con Drive…');
+  try{
     if(!fileId) await findOrCreateFile();
-    data = await driveRead();
-    localStorage.setItem(LS_CACHE, JSON.stringify(data));
+    data=await driveRead();
+    localStorage.setItem(LS_CACHE,JSON.stringify(data));
     setStatus('ok','Datos cargados');
-  } catch(e) {
-    const cached = localStorage.getItem(LS_CACHE);
-    if(cached){ data=JSON.parse(cached); setStatus('err','Sin conexión · usando caché local'); }
-    else setStatus('err','No se pudo cargar · '+e.message);
+  }catch(e){
+    const c=localStorage.getItem(LS_CACHE);
+    if(c){ data=JSON.parse(c); setStatus('err','Sin conexión · usando caché'); }
+    else setStatus('err','No se pudo cargar: '+e.message);
   }
   initUI();
 }
 
+async function findOrCreateFile(){
+  const q=encodeURIComponent(`name='${FILE_NAME}' and trashed=false`);
+  const r=await apiGet(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&spaces=drive`);
+  const d=await r.json();
+  if(d.files&&d.files.length>0){ fileId=d.files[0].id; localStorage.setItem(LS_FILE,fileId); return; }
+  const boundary='org_bound', meta=JSON.stringify({name:FILE_NAME,mimeType:'application/json'}), content=JSON.stringify({tasks:[],notes:[],incomes:[],expenses:[]});
+  const body=`--${boundary}\r\nContent-Type: application/json\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+  const cr=await apiReq('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart','POST',body,`multipart/related; boundary=${boundary}`);
+  const f=await cr.json(); fileId=f.id; localStorage.setItem(LS_FILE,fileId);
+}
+
+async function driveRead(){
+  const r=await apiGet(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  if(!r.ok) throw new Error('read '+r.status);
+  return r.json();
+}
+async function driveWrite(obj){
+  await apiReq(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,'PATCH',JSON.stringify(obj,null,2),'application/json');
+}
+function scheduleSave(){
+  clearTimeout(saveTimer); setStatus('saving','Guardando…');
+  saveTimer=setTimeout(async()=>{
+    localStorage.setItem(LS_CACHE,JSON.stringify(data));
+    try{ await driveWrite(data); setStatus('ok','Guardado en Drive ✓'); }
+    catch(e){ setStatus('err','Error al guardar'); }
+  },1000);
+}
+
 function initUI(){
-  document.getElementById('today-lbl').textContent = new Date().toLocaleDateString('es-AR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
-  document.getElementById('tk-date').value = todayStr();
-  document.getElementById('inc-date').value = todayStr();
-  document.getElementById('exp-due').value = todayStr();
+  document.getElementById('today-lbl').textContent=new Date().toLocaleDateString('es-AR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  document.getElementById('tk-date').value=todayStr();
+  document.getElementById('inc-date').value=todayStr();
+  document.getElementById('exp-due').value=todayStr();
   buildMonthOptions(); renderTasks(); renderNotes();
 }
 
-// ── Save ──
-function scheduleSave(){
-  clearTimeout(saveTimer);
-  setStatus('saving','Guardando…');
-  saveTimer = setTimeout(async()=>{
-    localStorage.setItem(LS_CACHE, JSON.stringify(data));
-    try{ await driveWrite(data); setStatus('ok','Guardado en Drive ✓'); }
-    catch(e){ setStatus('err','Error al guardar'); }
-  }, 1000);
-}
-
-// ── Nav ──
-function nav(id,el,mobile=false){
-  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  document.getElementById('p-'+id).classList.add('active');
-  if(mobile) document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  else document.querySelectorAll('.nav-item').forEach(b=>b.classList.remove('active'));
-  el.classList.add('active');
-  if(id==='economia') renderEcon();
-}
-
-// ── Tasks ──
-function addTask(){
-  const name=document.getElementById('tk-name').value.trim(); if(!name) return;
-  data.tasks.unshift({id:Date.now(),name,cat:document.getElementById('tk-cat').value,pri:document.getElementById('tk-pri').value,date:document.getElementById('tk-date').value,done:false,created:todayStr()});
-  document.getElementById('tk-name').value='';
-  scheduleSave(); renderTasks();
-}
-function toggleTask(id){ const t=data.tasks.find(t=>t.id===id); if(t) t.done=!t.done; scheduleSave(); renderTasks(); }
-function delTask(id){ data.tasks=data.tasks.filter(t=>t.id!==id); scheduleSave(); renderTasks(); }
-function setFilter(f,el){ taskFilter=f; document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active')); el.classList.add('active'); renderTasks(); }
-function renderTasks(){
-  const priO={high:0,med:1,low:2};
-  let tasks=[...data.tasks].sort((a,b)=>{ if(a.done!==b.done) return a.done?1:-1; return priO[a.pri]-priO[b.pri]; });
-  document.getElementById('t-total').textContent=tasks.length;
-  document.getElementById('t-done').textContent=tasks.filter(t=>t.done).length;
-  document.getElementById('t-over').textContent=tasks.filter(t=>!t.done&&t.date&&t.date<todayStr()).length;
-  if(taskFilter==='trabajo') tasks=tasks.filter(t=>t.cat==='trabajo');
-  else if(taskFilter==='personal') tasks=tasks.filter(t=>t.cat==='personal');
-  else if(taskFilter==='high') tasks=tasks.filter(t=>t.pri==='high');
-  else if(taskFilter==='pending') tasks=tasks.filter(t=>!t.done);
-  const el=document.getElementById('task-list');
-  if(!tasks.length){ el.innerHTML='<div class="empty">No hay tareas en esta vista.</div>'; return; }
-  const pL={high:'Alta',med:'Media',low:'Baja'}, pB={high:'b-high',med:'b-med',low:'b-low'}, cB={trabajo:'b-work',personal:'b-personal'}, cL={trabajo:'Trabajo',personal:'Personal'};
-  el.innerHTML=tasks.map(t=>{
-    const od=!t.done&&t.date&&t.date<todayStr();
-    const days=t.date?Math.round((new Date(t.date)-new Date(todayStr()))/86400000):null;
-    let ds='';
-    if(t.date){ if(od) ds=`<span class="date-over"><i class="ti ti-alert-triangle" style="font-size:11px"></i> Vencida</span>`; else if(days<=3) ds=`<span class="date-warn"><i class="ti ti-clock" style="font-size:11px"></i> En ${days}d</span>`; else ds=`<span class="date-ok"><i class="ti ti-calendar" style="font-size:11px"></i> ${t.date}</span>`; }
-    return `<div class="task-item ${t.done?'done':''}"><input type="checkbox" class="task-cb" ${t.done?'checked':''} onchange="toggleTask(${t.id})"><div class="task-body"><div class="task-title">${esc(t.name)}</div><div class="task-meta"><span class="badge ${cB[t.cat]}">${cL[t.cat]}</span><span class="badge ${pB[t.pri]}">${pL[t.pri]}</span>${ds}</div></div><button class="del-btn" onclick="delTask(${t.id})"><i class="ti ti-trash" style="font-size:15px"></i></button></div>`;
-  }).join('');
-}
-
-// ── Notes ──
-function addNote(){
-  const title=document.getElementById('nt-title').value.trim(), body=document.getElementById('nt-body').value.trim();
-  if(!title&&!body) return;
-  data.notes.unshift({id:Date.now(),title:title||'Sin título',body,created:todayStr()});
-  document.getElementById('nt-title').value=''; document.getElementById('nt-body').value='';
-  scheduleSave(); renderNotes();
-}
-function delNote(id){ data.notes=data.notes.filter(n=>n.id!==id); scheduleSave(); renderNotes(); }
-function renderNotes(){
-  const el=document.getElementById('note-list');
-  if(!data.notes.length){ el.innerHTML='<div class="empty">No hay notas guardadas.</div>'; return; }
-  el.innerHTML=data.notes.map(n=>`<div class="note-item"><div class="note-header"><div class="note-title">${esc(n.title)}</div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text3)">${n.created}</span><button class="del-btn" onclick="delNote(${n.id})"><i class="ti ti-trash" style="font-size:14px"></i></button></div></div><div class="note-body">${esc(n.body)}</div></div>`).join('');
-}
-
-// ── Economy ──
-function econTab(t){ document.getElementById('ep-inc').style.display=t==='inc'?'block':'none'; document.getElementById('ep-exp').style.display=t==='exp'?'block':'none'; document.getElementById('etab-inc').classList.toggle('active',t==='inc'); document.getElementById('etab-exp').classList.toggle('active',t==='exp'); }
-function buildMonthOptions(){
-  const sel=document.getElementById('month-sel'), months=new Set([todayStr().slice(0,7)]);
-  data.incomes.forEach(i=>months.add(mk(i.date))); data.expenses.forEach(e=>months.add(mk(e.due)));
-  const sorted=[...months].filter(Boolean).sort().reverse();
-  sel.innerHTML=sorted.map(m=>{const[y,mo]=m.split('-');return `<option value="${m}" ${m===currentMonth?'selected':''}>${new Date(y,mo-1,1).toLocaleDateString('es-AR',{month:'long',year:'numeric'})}</option>`;}).join('');
-  if(!months.has(currentMonth)) currentMonth=sorted[0]; sel.value=currentMonth;
-}
-function addIncome(){
-  const name=document.getElementById('inc-name').value.trim(), amount=parseFloat(document.getElementById('inc-amount').value);
-  if(!name||!amount||amount<=0) return;
-  data.incomes.push({id:Date.now(),name,type:document.getElementById('inc-type').value,amount,date:document.getElementById('inc-date').value});
-  document.getElementById('inc-name').value=''; document.getElementById('inc-amount').value='';
-  scheduleSave(); buildMonthOptions(); renderEcon();
-}
-function addExpense(){
-  const name=document.getElementById('exp-name').value.trim(), amount=parseFloat(document.getElementById('exp-amount').value);
-  if(!name||!amount||amount<=0) return;
-  data.expenses.push({id:Date.now(),name,type:document.getElementById('exp-type').value,amount,due:document.getElementById('exp-due').value,paid:false});
-  document.getElementById('exp-name').value=''; document.getElementById('exp-amount').value='';
-  scheduleSave(); buildMonthOptions(); renderEcon();
-}
-function delIncome(id){ data.incomes=data.incomes.filter(i=>i.id!==id); scheduleSave(); buildMonthOptions(); renderEcon(); }
-function delExpense(id){ data.expenses=data.expenses.filter(e=>e.id!==id); scheduleSave(); buildMonthOptions(); renderEcon(); }
-function togglePaid(id){ const e=data.expenses.find(e=>e.id===id); if(e) e.paid=!e.paid; scheduleSave(); renderEcon(); }
-function dueBadge(due,paid){
-  if(paid) return '<span class="badge b-sueldo">Pagado</span>';
-  const t=todayStr(); if(due<t) return `<span class="date-over"><i class="ti ti-alert-triangle" style="font-size:11px"></i> Vencido</span>`;
-  const d=Math.round((new Date(due)-new Date(t))/86400000);
-  return d<=7?`<span class="date-warn"><i class="ti ti-clock" style="font-size:11px"></i> En ${d}d</span>`:`<span class="date-ok"><i class="ti ti-calendar" style="font-size:11px"></i> ${due}</span>`;
-}
-function renderEcon(){
-  currentMonth=document.getElementById('month-sel').value||todayStr().slice(0,7);
-  const inc=data.incomes.filter(i=>mk(i.date)===currentMonth), exp=data.expenses.filter(e=>mk(e.due)===currentMonth);
-  const tI=inc.reduce((s,i)=>s+i.amount,0), tE=exp.reduce((s,e)=>s+e.amount,0), bal=tI-tE;
-  const pct=tI>0?Math.min(100,Math.round(tE/tI*100)):(tE>0?100:0);
-  document.getElementById('e-inc').textContent=fmt(tI); document.getElementById('e-exp').textContent=fmt(tE);
-  const bEl=document.getElementById('e-bal'); bEl.textContent=fmt(bal); bEl.style.color=bal>=0?'var(--green)':'var(--red)';
-  document.getElementById('e-pct').textContent=pct+'% gastado';
-  const bar=document.getElementById('e-bar'); bar.style.width=pct+'%'; bar.style.background=pct>90?'#E24B4A':pct>70?'#BA7517':'#1D9E75';
-  const up=data.expenses.filter(e=>!e.paid).sort((a,b)=>a.due.localeCompare(b.due)).slice(0,5);
-  document.getElementById('e-venc').innerHTML=up.length?up.map(e=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid var(--border)"><div><div style="font-size:13px;font-weight:500">${esc(e.name)}</div><div style="margin-top:2px">${dueBadge(e.due,e.paid)}</div></div><div class="amt-red" style="font-size:14px;font-weight:600">${fmt(e.amount)}</div></div>`).join(''):'<div style="font-size:13px;color:var(--text2)">Sin vencimientos pendientes.</div>';
-  const tL={sueldo:'Sueldo',honorarios:'Honorarios',otro:'Otro'}, eL={fijo:'Fijo',variable:'Variable',servicio:'Servicio'}, eBdg={fijo:'b-fijo',variable:'b-variable',servicio:'b-serv'};
-  document.getElementById('inc-list').innerHTML=inc.length?inc.map(i=>`<div class="econ-item"><div class="econ-icon icon-inc"><i class="ti ti-arrow-down-right"></i></div><div class="econ-body"><div class="econ-name">${esc(i.name)}</div><div class="econ-meta"><span class="badge b-sueldo">${tL[i.type]||i.type}</span>·${i.date}</div></div><div class="econ-amount amt-green">${fmt(i.amount)}</div><button class="del-btn" onclick="delIncome(${i.id})"><i class="ti ti-trash" style="font-size:14px"></i></button></div>`).join(''):'<div class="empty">Sin ingresos este mes.</div>';
-  document.getElementById('exp-list').innerHTML=exp.length?exp.map(e=>`<div class="econ-item" style="${e.paid?'opacity:.5':''}"><div class="econ-icon icon-exp"><i class="ti ti-arrow-up-right"></i></div><div class="econ-body"><div class="econ-name" style="${e.paid?'text-decoration:line-through':''}">${esc(e.name)}</div><div class="econ-meta"><span class="badge ${eBdg[e.type]||'b-otro'}">${eL[e.type]||e.type}</span>${dueBadge(e.due,e.paid)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><div class="econ-amount amt-red">${fmt(e.amount)}</div><button class="toggle-btn" onclick="togglePaid(${e.id})">${e.paid?'Desmarcar':'Pagado'}</button></div><button class="del-btn" onclick="delExpense(${e.id})"><i class="ti ti-trash" style="font-size:14px"></i></button></div>`).join(''):'<div class="empty">Sin gastos este mes.</div>';
-}
-
-boot();
+window.addEventListener('load',()=>{
+  const wait=setInterval(()=>{
+    if(window.google&&window.google.accounts){ clearInterval(wait); initGIS(); }
+  },100);
+});
 </script>
 </body>
 </html>
